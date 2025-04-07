@@ -1,7 +1,10 @@
 import logging
 import json
+import os
+import time
 
 import jwt
+import aiohttp
 from aiohttp import web
 
 from .app_util import *
@@ -12,6 +15,38 @@ logger = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
 
+token_cache = {}
+
+async def introspect_token(
+	request: web.Request, token: str
+) -> str:
+	if token in token_cache:
+		did, expires = token_cache[token]
+		if expires > time.time():
+			return did
+		del token_cache[token]
+
+	auth = aiohttp.BasicAuth(
+		os.environ["INTROSPECTION_CLIENT_ID"],
+		os.environ["INTROSPECTION_CLIENT_SECRET"]
+	)
+	data = {
+		"token": token
+	}
+	async with get_client(request).post(
+			os.environ["INTROSPECTION_ENDPOINT"],
+			data=data,
+			auth=auth
+	) as r:
+		body = await r.json()
+
+		if not body.get("active", False):
+			raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'error="invalid_token"'})
+
+		did = body["sub"]
+		expires = min(int(body.get("exp", 0)), time.time() + 30)
+		token_cache[token] = (did, expires)
+		return did
 
 def verify_symmetric_token(
 	request: web.Request, token: str, expected_scope: str
@@ -69,6 +104,14 @@ def authenticated(handler):
 	async def authentication_handler(request: web.Request, *args, **kwargs):
 		# extract the auth token
 		auth = request.headers.get("Authorization")
+
+		if auth.startswith("DPoP "):
+			token = auth.removeprefix("DPoP ")
+			request["authed_did"] = await introspect_token(
+				request, token
+			)
+			return await handler(request, *args, **kwargs)
+
 		if auth is None:
 			raise web.HTTPUnauthorized(
 				text="authentication required (this may be a bug, I'm erring on the side of caution for now)"

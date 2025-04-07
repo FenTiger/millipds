@@ -3,6 +3,7 @@ import logging
 import jwt
 import cbrrr
 import json
+import os
 
 from aiohttp import web
 
@@ -24,12 +25,17 @@ WEBUI_HEADERS = {
 @routes.get("/.well-known/oauth-protected-resource")
 async def oauth_protected_resource(request: web.Request):
 	cfg = get_db(request).config
+	try:
+		auth_server = os.environ["AUTH_SERVER"]
+	except KeyError:
+                # we are our own auth server
+		auth_server = cfg["pds_pfx"]
 	return web.json_response(
 		{
 			"resource": cfg["pds_pfx"],
 			"authorization_servers": [
-				cfg["pds_pfx"]
-			],  # we are our own auth server
+				auth_server
+			],
 			"scopes_supported": [],
 			"bearer_methods_supported": ["header"],
 			"resource_documentation": "https://atproto.com",
